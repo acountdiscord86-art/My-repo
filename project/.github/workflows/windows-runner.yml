@@ -1,0 +1,80 @@
+name: Windows Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: "Lama runner aktif dalam menit (1-355, default 355)"
+        required: false
+        default: "355"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows-runner:
+    name: Windows Runner (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 360
+    steps:
+      - name: Tampilkan informasi runner
+        shell: pwsh
+        env:
+          DURATION_INPUT: ${{ inputs.duration_minutes }}
+        run: |
+          $start = [DateTime]::UtcNow
+
+          # Validasi durasi (maks 355 menit agar selesai rapi sebelum batas 360 menit)
+          $duration = 355
+          $parsed = 0
+          if ([int]::TryParse($env:DURATION_INPUT, [ref]$parsed)) {
+            $duration = [Math]::Min([Math]::Max($parsed, 1), 355)
+          }
+          $end = $start.AddMinutes($duration)
+
+          # Simpan waktu untuk step berikutnya
+          "START_UTC=$($start.ToString('o'))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "END_UTC=$($end.ToString('o'))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $os = Get-CimInstance -ClassName Win32_OperatingSystem
+          $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $osBuild = "$($os.BuildNumber).$($cv.UBR)"
+
+          $lines = @(
+            "Computer name   : $env:COMPUTERNAME",
+            "Windows edition : $($os.Caption) ($($cv.EditionID))",
+            "Windows version : $($os.Version) (DisplayVersion: $($cv.DisplayVersion))",
+            "OS build        : $osBuild",
+            "Runner image    : $env:ImageOS (versi $env:ImageVersion)",
+            "Runner name     : $env:RUNNER_NAME",
+            "Waktu mulai     : $($start.ToString('yyyy-MM-dd HH:mm:ss')) UTC",
+            "Waktu selesai   : $($end.ToString('yyyy-MM-dd HH:mm:ss')) UTC (durasi $duration menit)"
+          )
+          $lines | ForEach-Object { Write-Host $_ }
+
+          # Ringkasan di halaman run
+          "## Informasi Runner" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Runner aktif dengan countdown
+        shell: pwsh
+        run: |
+          $end = [DateTime]::Parse($env:END_UTC).ToUniversalTime()
+          Write-Host "Runner aktif. Hentikan kapan saja lewat tombol Cancel workflow."
+
+          while ($true) {
+            $now = [DateTime]::UtcNow
+            $remaining = $end - $now
+            if ($remaining.TotalSeconds -le 0) { break }
+
+            $text = '{0:00}:{1:00}:{2:00}' -f [int][Math]::Floor($remaining.TotalHours), $remaining.Minutes, $remaining.Seconds
+            Write-Host "[$($now.ToString('HH:mm:ss')) UTC] Sisa waktu: $text"
+
+            $sleep = [Math]::Min(300, [int][Math]::Ceiling($remaining.TotalSeconds))
+            Start-Sleep -Seconds $sleep
+          }
+
+          Write-Host "Waktu habis. Workflow selesai; runner akan dihancurkan oleh GitHub."
